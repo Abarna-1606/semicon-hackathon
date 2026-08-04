@@ -1,7 +1,18 @@
 import torch
 import torch.nn.functional as F
 
+try:
+    import lpips as _lpips_pkg
+    _LPIPS_AVAILABLE = True
+except ImportError:
+    _LPIPS_AVAILABLE = False
 
+_lpips_model = None
+
+
+# ---------------------------------------------------------------------------
+# SSIM (also used as part of the training loss)
+# ---------------------------------------------------------------------------
 def _gaussian_window(window_size, sigma):
     coords = torch.arange(window_size).float() - window_size // 2
     g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
@@ -35,8 +46,43 @@ def ssim_loss(img1, img2):
     return 1 - ssim(img1, img2)
 
 
+# ---------------------------------------------------------------------------
+# PSNR
+# ---------------------------------------------------------------------------
 def psnr(img1, img2, max_val=1.0):
     mse = F.mse_loss(img1, img2)
     if mse.item() == 0:
         return torch.tensor(100.0)
     return 20 * torch.log10(torch.tensor(max_val)) - 10 * torch.log10(mse)
+
+
+# ---------------------------------------------------------------------------
+# LPIPS (perceptual metric) — optional, only needed for the Results slide.
+# Install with: pip install lpips
+# ---------------------------------------------------------------------------
+def get_lpips_model(device):
+    """Lazily loads the LPIPS model once and reuses it. Returns None if the
+    lpips package isn't installed."""
+    global _lpips_model
+    if not _LPIPS_AVAILABLE:
+        return None
+    if _lpips_model is None:
+        _lpips_model = _lpips_pkg.LPIPS(net="alex").to(device)
+        _lpips_model.eval()
+    return _lpips_model
+
+
+def lpips_distance(img1, img2, device):
+    """
+    img1, img2: (B,1,H,W) tensors in [0,1] (grayscale).
+    LPIPS expects 3-channel images in [-1,1], so we replicate the grayscale
+    channel and rescale. Returns None if lpips isn't installed.
+    """
+    model = get_lpips_model(device)
+    if model is None:
+        return None
+    img1_3ch = img1.repeat(1, 3, 1, 1) * 2 - 1
+    img2_3ch = img2.repeat(1, 3, 1, 1) * 2 - 1
+    with torch.no_grad():
+        dist = model(img1_3ch.to(device), img2_3ch.to(device))
+    return dist.mean().item()
